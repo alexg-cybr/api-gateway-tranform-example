@@ -12,6 +12,23 @@ class ApiDynamoStack(core.Stack):
     def __init__(self, scope: core.Construct, id: str, **kwargs) -> None:
         super().__init__(scope, id, **kwargs)
 
+        # The code that defines your stack goes here
+        user_pool = cognito.UserPool(self, "UsersPool", sign_in_type=cognito.SignInType.USERNAME)
+        cfn_user_pool: cognito.CfnUserPool = user_pool.node.default_child
+        cfn_user_pool.policies = cognito.CfnUserPool.PoliciesProperty(
+            password_policy=cognito.CfnUserPool.PasswordPolicyProperty(
+                minimum_length=8,
+                require_lowercase=False,
+                require_numbers=False,
+                require_symbols=False,
+                require_uppercase=False
+            )
+        )
+
+        user_pool_client = cognito.UserPoolClient(self, "PoolClient",
+            user_pool=user_pool,
+            enabled_auth_flows=[cognito.AuthFlow.ADMIN_NO_SRP, cognito.AuthFlow.USER_PASSWORD])
+
         table = dynamodb.Table(self, "TestTable", 
             partition_key=dynamodb.Attribute(
                 name="name",
@@ -76,7 +93,21 @@ class ApiDynamoStack(core.Stack):
             method_responses.append(
                 apigateway.MethodResponse(status_code = k)
             )
-        
+   
         api = apigateway.RestApi(self, "test-api")
 
-        api.root.add_method("POST", dynamo_integration, method_responses=method_responses)
+        auth = apigateway.CfnAuthorizer(self, "testAuthorizer",
+            rest_api_id=api.rest_api_id,
+            identity_source="method.request.header.Authorization",
+            provider_arns=[user_pool.user_pool_arn],
+            type="COGNITO_USER_POOLS",
+            name='TestCognitoAuthorizer'
+        )
+
+        post_method = api.root.add_method("POST", dynamo_integration, method_responses=method_responses)
+
+        post_child: apigateway.CfnMethod = post_method.node.find_child('Resource')
+        post_child.add_property_override('AuthorizationType', apigateway.AuthorizationType.COGNITO)
+        post_child.add_property_override('AuthorizerId', { 'Ref': auth.logical_id })
+
+
